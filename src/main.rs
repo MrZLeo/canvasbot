@@ -1,6 +1,7 @@
 use bollard::container::CreateContainerOptions;
 use bollard::container::StartContainerOptions;
 use bollard::Docker;
+use clap::Parser;
 use reqwest::Client;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
@@ -200,8 +201,8 @@ async fn runner(docker: Arc<Docker>, canvas: Arc<Canvas>) {
     }
 }
 
-fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
-    let mut file = File::open("config.json")?;
+fn load_config(config_path: &str) -> Result<Config, Box<dyn std::error::Error>> {
+    let mut file = File::open(config_path)?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     let config: Config = serde_json::from_str(&contents)?;
@@ -234,21 +235,74 @@ fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
     Ok(config)
 }
 
+#[derive(Parser, Debug)]
+#[command(
+    name = "canvasbot",
+    version = "1.0",
+    author = "Zhang, Jing <mrzleo@foxmail.com>",
+    about = "Runs lab assignments in Docker containers",
+    long_about = None
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Commands {
+    Daemon {
+        #[arg(
+            short = 'f',
+            long,
+            default_value = "config.json",
+            help = "Path to the configuration file"
+        )]
+        config: String,
+    },
+    Generate {
+        #[arg(
+            short,
+            long,
+            default_value = "pipeline.yaml",
+            help = "Path to the pipeline configuration file"
+        )]
+        pipeline: String,
+        #[arg(
+            short,
+            long,
+            default_value = "lab_docker_runner",
+            help = "Name of the Docker runner"
+        )]
+        name: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = load_config()?;
-    let client = Client::new();
-    let canvas = Arc::new(Canvas::new(Arc::new(client), Arc::new(config)));
+    let cli = Cli::parse();
 
-    let docker =
-        Arc::new(Docker::connect_with_local_defaults().expect("Failed to connect to Docker"));
+    match cli.command {
+        Commands::Daemon { config } => {
+            let client = Client::new();
+            let config = load_config(&config)?;
+            let canvas = Arc::new(Canvas::new(Arc::new(client), Arc::new(config)));
 
-    println!("{} Lab Runner Started", canvas.config.lab_name);
+            let docker = Arc::new(
+                Docker::connect_with_local_defaults().expect("Failed to connect to Docker"),
+            );
 
-    // Run every 2 minutes
-    let mut interval = interval(Duration::from_secs(120));
-    loop {
-        runner(docker.clone(), canvas.clone()).await;
-        interval.tick().await;
+            println!("{} Lab Runner Started", canvas.config.lab_name);
+
+            // Run every 2 minutes
+            let mut interval = interval(Duration::from_secs(120));
+            loop {
+                runner(docker.clone(), canvas.clone()).await;
+                interval.tick().await;
+            }
+        }
+        #[allow(unused_variables)]
+        Commands::Generate { pipeline, name } => {
+            todo!("unfinish yet")
+        }
     }
 }
