@@ -197,7 +197,9 @@ async fn runner(docker: Arc<Docker>, canvas: Arc<Canvas>) {
     }
 
     for handle in handles {
-        let _ = handle.await;
+        handle
+            .await
+            .unwrap_or_else(|e| eprintln!("Task failed: {:?}", e));
     }
 }
 
@@ -206,7 +208,11 @@ fn load_config(config_path: &str) -> Result<Config, Box<dyn std::error::Error>> 
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     let config: Config = serde_json::from_str(&contents)?;
+    validate_config(&config)?;
+    Ok(config)
+}
 
+fn validate_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     if config.lab_name.is_empty() {
         return Err("LAB_NAME is empty in config.json".into());
     }
@@ -231,8 +237,7 @@ fn load_config(config_path: &str) -> Result<Config, Box<dyn std::error::Error>> 
     if config.lab_timeout == 0 {
         return Err("LAB_TIMEOUT is not set or is zero in config.json".into());
     }
-
-    Ok(config)
+    Ok(())
 }
 
 #[derive(Parser, Debug)]
