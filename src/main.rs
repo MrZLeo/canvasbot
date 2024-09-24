@@ -1,7 +1,10 @@
 use bollard::container::CreateContainerOptions;
 use bollard::container::StartContainerOptions;
+use bollard::container::WaitContainerOptions;
 use bollard::Docker;
 use clap::Parser;
+use futures::StreamExt;
+use reqwest::header::HeaderMap;
 use reqwest::Client;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
@@ -29,8 +32,70 @@ fn default_api_url() -> String {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Submission {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assignment_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assignment: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    course: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attempt: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grade: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grade_matches_current_submission: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    html_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    submission_comments: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    submission_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    submitted_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+
     user_id: u32,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grader_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graded_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    late: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assignment_visible: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    excused: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    missing: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    late_policy_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    points_deducted: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seconds_late: Option<u32>,
+
     workflow_state: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra_attempts: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anonymous_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    posted_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    read_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    redo_request: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -73,16 +138,60 @@ impl Canvas {
         }
     }
 
-    async fn get_submissions(&self) -> Result<Vec<Submission>, Box<dyn std::error::Error>> {
-        let submissions: Vec<Submission> = self
-            .client
-            .get(&self.url)
-            .header(Self::AUTHORIZATION_HEADER, &self.header)
-            .send()
-            .await?
-            .json()
-            .await?;
+    async fn get_all_submissions(&self) -> Result<Vec<Submission>, Box<dyn std::error::Error>> {
+        let mut submissions: Vec<Submission> = Vec::new();
+        let mut next_url = Some(self.url.clone());
+
+        while let Some(url) = next_url {
+            let response = self
+                .client
+                .get(&url)
+                .header(Self::AUTHORIZATION_HEADER, &self.header)
+                .send()
+                .await?;
+
+            // resolve next page URL first
+            next_url = Self::get_next_link(response.headers(), &self.header);
+
+            // current page submissions
+            let page_submissions: Vec<Submission> = response.json().await?;
+            submissions.extend(
+                page_submissions
+                    .into_iter()
+                    .filter(|s| s.workflow_state == "submitted"),
+            );
+        }
+        println!("Got {} submissions", submissions.len());
         Ok(submissions)
+    }
+
+    /// Get next page URL from Link header
+    fn get_next_link(headers: &HeaderMap, access_token: &str) -> Option<String> {
+        if let Some(link_header) = headers.get("Link") {
+            let link_str = link_header.to_str().ok()?;
+
+            // find "rel=\"next\"" part in Link header
+            for link in link_str.split(',') {
+                if link.contains("rel=\"next\"") {
+                    let parts: Vec<&str> = link.split(';').collect();
+                    if let Some(url_part) = parts.first() {
+                        // re-append access token to the next URL
+                        let mut next_url = url_part
+                            .trim()
+                            .trim_start_matches('<')
+                            .trim_end_matches('>')
+                            .to_string();
+                        if next_url.contains('?') {
+                            next_url.push_str(&format!("&access_token={}", access_token));
+                        } else {
+                            next_url.push_str(&format!("?access_token={}", access_token));
+                        }
+                        return Some(next_url);
+                    }
+                }
+            }
+        }
+        None
     }
 
     async fn update_score(
@@ -115,10 +224,12 @@ impl Canvas {
 async fn start_container_runner(docker: Arc<Docker>, canvas: Arc<Canvas>, submission: Submission) {
     println!("Start testing for user ID: {}", submission.user_id);
 
-    let container = docker
+    let container_name = format!("lab3-{}", submission.user_id);
+    let user_id = submission.user_id;
+    if docker
         .create_container(
             Some(CreateContainerOptions {
-                name: format!("lab3-{}", submission.user_id),
+                name: &container_name,
                 platform: None,
             }),
             bollard::container::Config {
@@ -129,53 +240,80 @@ async fn start_container_runner(docker: Arc<Docker>, canvas: Arc<Canvas>, submis
                         .docker_cmd
                         .iter()
                         .map(|s| s.as_str())
+                        .chain(std::iter::once(user_id.to_string().as_str()))
                         .collect(),
                 ),
                 host_config: Some(bollard::service::HostConfig {
                     memory: Some(1_073_741_824), // 1GB
+                    auto_remove: Some(true),
                     ..Default::default()
                 }),
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .is_err()
+    {
+        let _ = canvas
+            .update_score(user_id, 0, "Test environment startup error")
+            .await;
+    };
 
-    match container {
-        Ok(container_info) => {
-            let container_id = container_info.id;
-            let user_id = submission.user_id;
+    println!("Container {} created", container_name);
 
-            match timeout(
-                Duration::from_secs(canvas.config.lab_timeout),
-                docker.start_container(&container_id, None::<StartContainerOptions<String>>),
-            )
-            .await
-            {
-                Ok(_) => {
-                    // Container finished within the specified timeout
-                    let _ = docker.remove_container(&container_id, None).await;
-                    println!("Container for user {} finished successfully", user_id);
-                }
-                Err(_) => {
-                    // Timer triggered, force stop and remove the container
-                    let _ = docker.stop_container(&container_id, None).await;
-                    let _ = docker.remove_container(&container_id, None).await;
-                    let _ = canvas.update_score(user_id, 0, "Test timeout").await;
-                    println!("Container for user {} timed out", user_id);
-                }
-            }
+    // Start the container
+    if (docker
+        .start_container(&container_name, None::<StartContainerOptions<String>>)
+        .await)
+        .is_err()
+    {
+        let _ = canvas
+            .update_score(user_id, 0, "Failed to start container")
+            .await;
+        return;
+    }
+
+    // Wait for container
+    let wait_options = WaitContainerOptions {
+        condition: "not-running".to_string(),
+    };
+    let mut wait_stream = docker.wait_container::<String>(&container_name, Some(wait_options));
+    match timeout(
+        Duration::from_secs(canvas.config.lab_timeout),
+        wait_stream.next(),
+    )
+    .await
+    {
+        Ok(Some(Ok(_))) => {
+            println!("Container for user {} finished successfully", user_id);
+        }
+        Ok(Some(Err(e))) => {
+            println!("Error waiting for container: {:?}", e);
+        }
+        Ok(None) => {
+            println!("wait_container stream ended unexpectedly");
         }
         Err(_) => {
-            let _ = canvas
-                .update_score(submission.user_id, 0, "Test environment startup error")
-                .await;
+            // Test timeout
+            println!("Container for user {} timed out", user_id);
+            if let Err(e) = docker.stop_container(&container_name, None).await {
+                println!("Error stopping container: {:?}", e);
+            }
+            if let Err(e) = docker.remove_container(&container_name, None).await {
+                println!("Error removing container: {:?}", e);
+            }
+            if let Err(e) = canvas.update_score(user_id, 0, "Test timeout").await {
+                println!("Error updating score: {:?}", e);
+            }
         }
     }
+
     println!("Finish {}", submission.user_id);
 }
 
 async fn runner(docker: Arc<Docker>, canvas: Arc<Canvas>) {
-    let submissions = match canvas.get_submissions().await {
+    println!("Checking for new submissions");
+    let submissions = match canvas.get_all_submissions().await {
         Ok(subs) => subs,
         Err(e) => {
             eprintln!("Failed to get submissions: {}", e);
@@ -186,14 +324,12 @@ async fn runner(docker: Arc<Docker>, canvas: Arc<Canvas>) {
     let mut handles = vec![];
 
     for submission in submissions {
-        if submission.workflow_state == "submitted" {
-            let docker = Arc::clone(&docker);
-            let canvas = Arc::clone(&canvas);
-            let handle = tokio::spawn(async move {
-                start_container_runner(docker, canvas, submission).await;
-            });
-            handles.push(handle);
-        }
+        let docker = Arc::clone(&docker);
+        let canvas = Arc::clone(&canvas);
+        let handle = tokio::spawn(async move {
+            start_container_runner(docker, canvas, submission).await;
+        });
+        handles.push(handle);
     }
 
     for handle in handles {
