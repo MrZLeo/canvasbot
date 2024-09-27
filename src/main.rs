@@ -4,10 +4,13 @@ use bollard::container::WaitContainerOptions;
 use bollard::Docker;
 use clap::Parser;
 use futures::StreamExt;
+use log::LevelFilter;
+use log::{error, info};
 use reqwest::header::HeaderMap;
 use reqwest::Client;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
+use simple_logger::SimpleLogger;
 use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
@@ -161,7 +164,6 @@ impl Canvas {
                     .filter(|s| s.workflow_state == "submitted"),
             );
         }
-        println!("Got {} submissions", submissions.len());
         Ok(submissions)
     }
 
@@ -222,7 +224,7 @@ impl Canvas {
 }
 
 async fn start_container_runner(docker: Arc<Docker>, canvas: Arc<Canvas>, submission: Submission) {
-    println!("Start testing for user ID: {}", submission.user_id);
+    info!("Start testing for user ID: {}", submission.user_id);
 
     let container_name = format!("lab3-{}", submission.user_id);
     let user_id = submission.user_id;
@@ -259,7 +261,7 @@ async fn start_container_runner(docker: Arc<Docker>, canvas: Arc<Canvas>, submis
             .await;
     };
 
-    println!("Container {} created", container_name);
+    info!("Container {} created", container_name);
 
     // Start the container
     if (docker
@@ -285,38 +287,37 @@ async fn start_container_runner(docker: Arc<Docker>, canvas: Arc<Canvas>, submis
     .await
     {
         Ok(Some(Ok(_))) => {
-            println!("Container for user {} finished successfully", user_id);
+            info!("Container for user {} finished successfully", user_id);
         }
         Ok(Some(Err(e))) => {
-            println!("Error waiting for container: {:?}", e);
+            error!("Error waiting for container: {:?}", e);
         }
         Ok(None) => {
-            println!("wait_container stream ended unexpectedly");
+            error!("wait_container stream ended unexpectedly");
         }
         Err(_) => {
             // Test timeout
-            println!("Container for user {} timed out", user_id);
+            error!("Container for user {} timed out", user_id);
             if let Err(e) = docker.stop_container(&container_name, None).await {
-                println!("Error stopping container: {:?}", e);
+                error!("Error stopping container: {:?}", e);
             }
             if let Err(e) = docker.remove_container(&container_name, None).await {
-                println!("Error removing container: {:?}", e);
+                error!("Error removing container: {:?}", e);
             }
             if let Err(e) = canvas.update_score(user_id, 0, "Test timeout").await {
-                println!("Error updating score: {:?}", e);
+                error!("Error updating score: {:?}", e);
             }
         }
     }
 
-    println!("Finish {}", submission.user_id);
+    info!("Finish {}", submission.user_id);
 }
 
 async fn runner(docker: Arc<Docker>, canvas: Arc<Canvas>) {
-    println!("Checking for new submissions");
     let submissions = match canvas.get_all_submissions().await {
         Ok(subs) => subs,
         Err(e) => {
-            eprintln!("Failed to get submissions: {}", e);
+            error!("Failed to get submissions: {}", e);
             return;
         }
     };
@@ -420,6 +421,12 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    SimpleLogger::new()
+        .with_level(LevelFilter::Info)
+        .with_colors(true)
+        .without_timestamps()
+        .init()
+        .unwrap();
     let cli = Cli::parse();
 
     match cli.command {
@@ -432,7 +439,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Docker::connect_with_local_defaults().expect("Failed to connect to Docker"),
             );
 
-            println!("{} Lab Runner Started", canvas.config.lab_name);
+            info!("{} Lab Runner Started", canvas.config.lab_name);
 
             // Run every 2 minutes
             let mut interval = interval(Duration::from_secs(120));
