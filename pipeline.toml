@@ -1,0 +1,59 @@
+[variables]
+score = 0
+url = ""
+
+[steps.prepare]
+commands = [
+    { type = "builtin", action = "download_and_extract_7z", args = [
+        "var::url",
+        "downloaded",
+    ], abort_on_failure = false },
+]
+
+[steps.compile]
+commands = [
+    { type = "builtin", action = "compile_cmake", args = [
+        "downloaded/lab7-debug1",
+    ] },
+    { type = "variable", operation = "+", name = "score", value = 30 },
+]
+
+[steps.task0]
+commands = [{ type = "custom", action = "ls", args = ["-l", "-a"] }]
+
+[steps.task1]
+commands = [
+    # { type = "builtin", action = "run_tests" },
+    { type = "builtin", action = "diff_file", args = [
+        "/home/mrzleo/sep-2024/lab7-debug1/P1/main.cpp",
+        "/home/mrzleo/sep-2024/lab7-debug1/P1/main.ans.cpp",
+        "20",
+    ] },
+    { type = "variable", operation = "+", name = "score", value = 10 },
+]
+
+# [steps.task2]
+# commands = [
+#     { type = "builtin", action = "run_tests" },
+#     { type = "builtin", action = "diff" },
+#     { type = "variable", operation = "+", name = "score", value = 15 },
+# ]
+#
+# [steps.task3]
+# commands = [
+#     { type = "builtin", action = "run_tests" },
+#     { type = "variable", operation = "+", name = "score", value = 15 },
+# ]
+#
+# [steps.task4]
+# commands = [
+#     { type = "builtin", action = "run_tests" },
+#     { type = "builtin", action = "diff" },
+#     { type = "variable", operation = "+", name = "score", value = 15 },
+# ]
+#
+# [steps.task5]
+# commands = [
+#     { type = "builtin", action = "run_tests" },
+#     { type = "variable", operation = "+", name = "score", value = 15 },
+# ]

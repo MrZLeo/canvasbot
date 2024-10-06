@@ -1,15 +1,16 @@
+mod builtin;
 mod canvas;
 mod config;
-
-use canvas::Canvas;
-use canvas::Submission;
-use config::Config;
+mod worker;
 
 use bollard::container::CreateContainerOptions;
 use bollard::container::StartContainerOptions;
 use bollard::container::WaitContainerOptions;
 use bollard::Docker;
+use canvas::Canvas;
+use canvas::Submission;
 use clap::Parser;
+use config::Config;
 use futures::StreamExt;
 use log::LevelFilter;
 use log::{error, info};
@@ -19,12 +20,33 @@ use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
 use tokio::time::{interval, timeout, Duration};
+use toml::Value;
 
 async fn start_container_runner(docker: Arc<Docker>, canvas: Arc<Canvas>, submission: Submission) {
-    info!("Start testing for user ID: {}", submission.user_id);
-
     let container_name = format!("lab3-{}", submission.user_id);
     let user_id = submission.user_id;
+    info!("Start testing for user ID: {}", user_id);
+
+    let attachments = match submission.attachments {
+        Some(attachments) => attachments,
+        None => {
+            let _ = canvas
+                .update_score(user_id, 0, "No attachments found")
+                .await;
+            return;
+        }
+    };
+
+    let attachment_url = match attachments.first() {
+        Some(attachment) => &attachment.url,
+        None => {
+            let _ = canvas
+                .update_score(user_id, 0, "No attachment URL found")
+                .await;
+            return;
+        }
+    };
+
     if docker
         .create_container(
             Some(CreateContainerOptions {
@@ -38,8 +60,8 @@ async fn start_container_runner(docker: Arc<Docker>, canvas: Arc<Canvas>, submis
                         .config
                         .docker_cmd
                         .iter()
-                        .map(|s| s.as_str())
-                        .chain(std::iter::once(user_id.to_string().as_str()))
+                        .chain([&user_id.to_string(), attachment_url])
+                        .map(String::as_str)
                         .collect(),
                 ),
                 host_config: Some(bollard::service::HostConfig {
@@ -198,21 +220,25 @@ enum Commands {
         )]
         config: String,
     },
-    Generate {
+    Execute {
+        #[arg(
+            short = 'f',
+            long,
+            default_value = "config.json",
+            help = "Path to the configuration file"
+        )]
+        config: String,
         #[arg(
             short,
             long,
-            default_value = "pipeline.yaml",
+            default_value = "pipeline.toml",
             help = "Path to the pipeline configuration file"
         )]
         pipeline: String,
-        #[arg(
-            short,
-            long,
-            default_value = "lab_docker_runner",
-            help = "Name of the Docker runner"
-        )]
-        name: String,
+        #[arg(short, long, help = "Submission id of the test")]
+        sub_id: String,
+        #[arg(short, long, help = "URL of the attachment")]
+        url: String,
     },
 }
 
@@ -225,13 +251,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init()
         .unwrap();
     let cli = Cli::parse();
+    let client = Client::new();
 
     match cli.command {
         Commands::Daemon { config } => {
-            let client = Client::new();
             let config = load_config(&config)?;
             let canvas = Arc::new(Canvas::new(Arc::new(client), Arc::new(config)));
-
             let docker = Arc::new(
                 Docker::connect_with_local_defaults().expect("Failed to connect to Docker"),
             );
@@ -246,8 +271,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         #[allow(unused_variables)]
-        Commands::Generate { pipeline, name } => {
-            unimplemented!()
+        Commands::Execute {
+            config,
+            pipeline,
+            sub_id,
+            url,
+        } => {
+            let config = load_config(&config)?;
+            let canvas = Arc::new(Canvas::new(Arc::new(client), Arc::new(config)));
+
+            let pipeline = worker::parse_config(&pipeline);
+            let mut worker = worker::Worker::new(pipeline.variables);
+            for (name, step) in pipeline.steps {
+                info!("Adding task: {}", name);
+                let task = worker::Task::new(name, step.commands, worker.variables.clone());
+                worker.add_task(task);
+            }
+
+            // modify the pipeline variables
+            worker.modify_variable("url", Value::String(url));
+
+            // Run the pipeline
+            worker.run().await;
+
+            info!("Upadting score");
+            let final_score = worker
+                .variables
+                .lock()
+                .expect("should finished task")
+                .get("score")
+                .expect("should have score")
+                .clone()
+                .expect("should define score")
+                .as_integer()
+                .expect("should be integer") as u32;
+            info!("Final score: {}", final_score);
+
+            let comment = worker
+                .results
+                .into_iter()
+                .map(|(name, res)| res)
+                .reduce(|res, msg| res + &msg)
+                .expect("should have a result comment");
+
+            canvas
+                .update_score(sub_id.parse().unwrap(), final_score, &comment)
+                .await?;
+            info!("Pipeline finished");
         }
     }
+    Ok(())
 }

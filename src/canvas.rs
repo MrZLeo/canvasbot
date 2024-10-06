@@ -5,6 +5,22 @@ use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Attachment {
+    id: u64,
+    uuid: String,
+    folder_id: u64,
+    display_name: String,
+    filename: String,
+    upload_status: String,
+    #[serde(rename = "content-type")]
+    content_type: String,
+    pub url: String,
+    size: u64,
+    created_at: String,
+    updated_at: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Submission {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -71,6 +87,9 @@ pub(crate) struct Submission {
     read_status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     redo_request: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<Attachment>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
