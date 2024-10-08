@@ -313,10 +313,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|(name, res)| res)
                 .reduce(|res, msg| res + &msg)
                 .expect("should have a result comment");
+            println!("Comment:\n{}", comment);
 
-            canvas
-                .update_score(sub_id.parse().unwrap(), final_score, &comment)
-                .await?;
+            //canvas
+            //    .update_score(sub_id.parse().unwrap(), final_score, &comment)
+            //    .await?;
             info!("Pipeline finished");
         }
     }

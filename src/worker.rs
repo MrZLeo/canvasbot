@@ -111,7 +111,12 @@ impl Task {
     }
 
     pub async fn run(&mut self, builtin: &BuiltinRegistry) -> Result<String, Box<dyn Error>> {
-        println!("Running task: {}", self.name);
+        info!("Running task: {}", self.name);
+        // 定义每列的宽度
+        let label_width = 10;
+        let status_width = 20;
+        let label = format!("[{}]", self.name);
+
         for command in &self.commands {
             match command {
                 Command::Builtin {
@@ -141,11 +146,24 @@ impl Task {
                         error!("Error executing builtin command '{}': {}", action, e);
                         if abort_on_failure.unwrap_or(false) {
                             error!("Aborting task due to failure");
-                            return Err(
-                                format!("{} aborted due to failure: {}\n", self.name, e).into()
-                            );
+                            return Err(format!(
+                                "{:<width$} {:>width2$}\n{}\nTest aborted.\n",
+                                label,
+                                "Failed",
+                                e,
+                                width = label_width,
+                                width2 = status_width
+                            )
+                            .into());
                         } else {
-                            return Ok(format!("{} Failed\n", self.name));
+                            return Ok(format!(
+                                "{:<width$} {:>width2$}\n{}",
+                                label,
+                                "Failed",
+                                e,
+                                width = label_width,
+                                width2 = status_width
+                            ));
                         }
                     }
                 }
@@ -154,20 +172,69 @@ impl Task {
                     args,
                     abort_on_failure,
                 } => {
+                    let mut args = args.clone().unwrap_or_default();
+                    args.iter_mut()
+                        .filter(|arg| arg.starts_with("var::"))
+                        .for_each(|arg| {
+                            *arg = self
+                                .variables
+                                .lock()
+                                .expect("should be able to lock the varibales")
+                                .get(&arg.replace("var::", ""))
+                                .expect("should have varibales")
+                                .as_ref()
+                                .unwrap()
+                                .to_string()
+                                .trim_matches('\"')
+                                .to_string();
+                        });
                     info!("Running custom command: {} with ({:?})", action, args);
-                    let args = args.clone().unwrap_or_default();
-                    if let Err(e) = std::process::Command::new(action.clone())
+
+                    let root_dir = env!("CARGO_MANIFEST_DIR");
+                    let cmd = std::process::Command::new(action.clone())
                         .args(&args[..])
-                        .status()
-                    {
-                        error!("Error executing builtin command '{}': {}", action, e);
-                        if abort_on_failure.unwrap_or(false) {
-                            error!("Aborting task due to failure");
-                            return Err(
-                                format!("{} aborted due to failure: {}\n", self.name, e).into()
-                            );
-                        } else {
-                            return Ok(format!("{} Failed\n", self.name));
+                        .env("SEP_ROOT_DIR", root_dir)
+                        .output();
+
+                    match cmd {
+                        Ok(output) => {
+                            let stdout = std::str::from_utf8(&output.stdout).unwrap();
+                            //println!("{}", stdout);
+
+                            if !output.status.success() {
+                                if abort_on_failure.unwrap_or(false) {
+                                    error!("Aborting task due to failure");
+                                    return Err(format!(
+                                        "{:<width$} {:>width2$}\n{}\nTest aborted.\n",
+                                        label,
+                                        "Failed",
+                                        stdout,
+                                        width = label_width,
+                                        width2 = status_width
+                                    )
+                                    .into());
+                                } else {
+                                    return Ok(format!(
+                                        "{:<width$} {:>width2$}\n{}",
+                                        label,
+                                        "Failed",
+                                        stdout,
+                                        width = label_width,
+                                        width2 = status_width
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error executing custom command '{}': {}", action, e);
+                            if abort_on_failure.unwrap_or(false) {
+                                error!("Aborting task due to failure");
+                                return Err(
+                                    format!("{} aborted due to failure: {}\n", label, e).into()
+                                );
+                            } else {
+                                return Ok(format!("{} execution failed due to: {}\n", label, e));
+                            }
                         }
                     }
                 }
@@ -176,7 +243,7 @@ impl Task {
                     name,
                     value,
                 } => {
-                    info!("Running variable command: {} {} {}", operation, name, value);
+                    info!("Running variable command: {} {} {}", name, operation, value);
                     if operation == "+" {
                         let mut variables =
                             self.variables.lock().expect("Failed to lock variables");
@@ -199,6 +266,12 @@ impl Task {
                 }
             }
         }
-        Ok(format!("{} Passed\n", self.name))
+        Ok(format!(
+            "{:<width$} {:>width2$}\n",
+            label,
+            "Passed",
+            width = label_width,
+            width2 = status_width
+        ))
     }
 }

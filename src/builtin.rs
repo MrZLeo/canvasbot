@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 use std::{error::Error, fs::read_to_string};
 
@@ -48,10 +47,7 @@ pub fn create_builtin_registry() -> BuiltinRegistry {
         .register("download_and_extract_7z", |args| {
             Box::pin(download_and_extract_7z_builtin(args))
         })
-        .register("diff_file", |args| Box::pin(diff_file_builtin(args)))
-        .register("compile_cmake", |args| {
-            Box::pin(compile_cmake_builtin(args))
-        });
+        .register("diff_file", |args| Box::pin(diff_file_builtin(args)));
 
     registry
 }
@@ -107,21 +103,4 @@ async fn diff_file(base: &str, submission: &str) -> Result<usize, Box<dyn Error>
         .filter(|change| change.tag() != ChangeTag::Equal)
         .count();
     Ok(diff)
-}
-
-async fn compile_cmake_builtin(args: Vec<String>) -> Result<(), Box<dyn Error>> {
-    let dir = args.first().ok_or("Directory not set")?;
-
-    compile_cmake(dir).await
-}
-
-/// Compile Cmake in the given directory
-async fn compile_cmake(dir: &str) -> Result<(), Box<dyn Error>> {
-    Command::new("cmake")
-        .args(["-B", "build", "-S", dir])
-        .status()?;
-
-    Command::new("cmake").args(["--build", "build"]).status()?;
-
-    Ok(())
 }
