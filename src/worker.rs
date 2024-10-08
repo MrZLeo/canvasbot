@@ -269,7 +269,7 @@ impl Task {
         Ok(format!(
             "{:<width$} {:>width2$}\n",
             label,
-            "Passed",
+            "Ok",
             width = label_width,
             width2 = status_width
         ))
