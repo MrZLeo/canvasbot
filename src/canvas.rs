@@ -132,7 +132,13 @@ impl Canvas {
         }
     }
 
-    pub async fn get_all_sub(&self) -> Result<Vec<Submission>, Box<dyn std::error::Error>> {
+    pub async fn get_all_sub<F>(
+        &self,
+        filter_fn: F,
+    ) -> Result<Vec<Submission>, Box<dyn std::error::Error>>
+    where
+        F: Fn(&Submission) -> bool,
+    {
         let mut submissions: Vec<Submission> = Vec::new();
         let mut next_url = Some(self.url.clone());
 
@@ -149,11 +155,7 @@ impl Canvas {
 
             // current page submissions
             let page_submissions: Vec<Submission> = response.json().await?;
-            submissions.extend(
-                page_submissions
-                    .into_iter()
-                    .filter(|s| s.workflow_state == "submitted"),
-            );
+            submissions.extend(page_submissions.into_iter().filter(&filter_fn));
         }
         Ok(submissions)
     }

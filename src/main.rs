@@ -37,7 +37,7 @@ async fn start_container_runner(docker: Arc<Docker>, canvas: Arc<Canvas>, submis
         }
     };
 
-    let attachment_url = match attachments.first() {
+    let _attachment_url = match attachments.first() {
         Some(attachment) => &attachment.url,
         None => {
             let _ = canvas
@@ -60,7 +60,7 @@ async fn start_container_runner(docker: Arc<Docker>, canvas: Arc<Canvas>, submis
                         .config
                         .docker_cmd
                         .iter()
-                        .chain([&user_id.to_string(), attachment_url])
+                        .chain([&user_id.to_string()])
                         .map(String::as_str)
                         .collect(),
                 ),
@@ -133,7 +133,10 @@ async fn start_container_runner(docker: Arc<Docker>, canvas: Arc<Canvas>, submis
 }
 
 async fn runner(docker: Arc<Docker>, canvas: Arc<Canvas>) {
-    let submissions = match canvas.get_all_sub().await {
+    let submissions = match canvas
+        .get_all_sub(|sub| canvas.config.fetch_filter.contains(&sub.workflow_state))
+        .await
+    {
         Ok(subs) => subs,
         Err(e) => {
             error!("Failed to get submissions: {}", e);
@@ -250,6 +253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .without_timestamps()
         .init()
         .unwrap();
+    console_subscriber::init();
     let cli = Cli::parse();
     let client = Client::new();
 
